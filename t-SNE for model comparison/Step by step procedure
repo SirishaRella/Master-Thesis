@@ -1,0 +1,286 @@
+Step-1: Generating metadata using the following script
+
+import glob
+
+import Image
+
+CLASSES  = ['aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car',
+           'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike',
+           'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']
+
+source_path = "C:/Users/Siri/PycharmProjects/Dataset_conversion/Pascal_VOC/classes_2007/" + CLASSES[19]+"/images"
+
+image_files = [f for f in glob.glob(source_path+'/*.jpg')]
+
+print(image_files)
+with open('C:/Users/Siri/PycharmProjects/Dataset_conversion/Pascal_VOC/classes_2007/' + CLASSES[19] +'/metadata.tsv','w') as file:
+    id = 1
+    file.write('id' +' '+'image')
+    file.write('\n')
+    for filepath in image_files:
+        image_name = filepath.split('\\')[-1]
+        print(image_name)
+        file.write(str(id) +' ' +image_name)
+        file.write('\n')
+        id = id+1
+
+Step-2: Extract features from the images by passing the metadata file created in step-1
+#!/usr/bin/env python3
+#
+# Copyright 2017 Zegami Ltd
+
+"""Preprocess images using Keras pre-trained models."""
+
+import argparse
+import csv
+import os
+
+from keras import applications
+from keras.applications.resnet50 import preprocess_input
+from keras.preprocessing import image
+import numpy as np
+import pandas
+
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+
+def named_model(name):
+    print("checking which model name")
+    print(name)
+    # include_top=False removes the fully connected layer at the end/top of the network
+    # This allows us to get the feature vector as opposed to a classification
+    if name == 'Xception':
+        return applications.xception.Xception(weights='imagenet', include_top=False, pooling='avg')
+
+    if name == 'VGG16':
+        return applications.vgg16.VGG16(weights='imagenet', include_top=False, pooling='avg')
+
+    if name == 'VGG19':
+        return applications.vgg19.VGG19(weights='imagenet', include_top=False, pooling='avg')
+
+    if name == 'InceptionV3':
+        return applications.inception_v3.InceptionV3(weights='imagenet', include_top=False, pooling='avg')
+
+    if name == 'MobileNet':
+        return applications.mobilenet.MobileNet(weights='imagenet', include_top=False, pooling='avg')
+
+    return applications.resnet50.ResNet50(weights='imagenet', include_top=False, pooling='avg')
+
+
+parser = argparse.ArgumentParser(prog='Feature extractor')
+parser.add_argument('source', default=None, help='Path to the source metadata file')
+parser.add_argument(
+    'model',
+    default='VGG16',
+    nargs="?",
+    type=named_model,
+    help='Name of the pre-trained model to use'
+)
+
+pargs = parser.parse_args()
+print(pargs)
+source_dir = os.path.dirname(pargs.source)
+
+
+def get_feature(metadata):
+
+    print('{}'.format(metadata['id']))
+    try:
+        img_path = os.path.join(source_dir, 'images', metadata['image'])
+        if os.path.isfile(img_path):
+            print('is file: {}'.format(img_path))
+            try:
+                # load image setting the image size to 224 x 224
+                img = image.load_img(img_path, target_size=(224, 224))
+                # convert image to numpy array
+                x = image.img_to_array(img)
+                print("working or not")
+                print(metadata)
+                # the image is now in an array of shape (3, 224, 224)
+                # but we need to expand it to (1, 2, 224, 224) as Keras is expecting a list of images
+                x = np.expand_dims(x, axis=0)
+                x = preprocess_input(x)
+
+                # extract the features
+                features = pargs.model.predict(x)[0]
+
+                # convert from Numpy to a list of values
+                features_arr = np.char.mod('%f', features)
+                print("checking")
+                print(len(features_arr))
+
+                return {"id": metadata['id'], "features": ','.join(features_arr)}
+            except Exception as ex:
+                # skip all exceptions for now
+                print(ex)
+                pass
+    except Exception as ex:
+        # skip all exceptions for now
+        print(ex)
+        pass
+    return None
+
+
+def start():
+    try:
+        # read the source file
+        print(pargs.source)
+        data = pandas.read_csv(pargs.source, sep=' ')
+        print("Sirisha")
+
+        # extract features
+        features = map(get_feature, data.T.to_dict().values())
+
+        # remove empty entries
+        features = filter(None, features)
+
+        # write to a tab delimited file
+        source_filename = os.path.splitext(pargs.source)[0].split(os.sep)[-1]
+        print(source_dir)
+        with open(os.path.join(source_dir, '{}_features.tsv'.format(source_filename)), 'w') as output:
+            w = csv.DictWriter(output, fieldnames=['id', 'features'], delimiter='\t', lineterminator='\n')
+            w.writeheader()
+            w.writerows(features)
+
+    except EnvironmentError as e:
+        print(e)
+
+
+if __name__ == '__main__':
+    start()
+
+Step-3: Generate tsne for feature vectors you have extracted.
+#!/usr/bin/env python3
+#
+# Copyright 2017 Zegami Ltd
+
+"""Perform t-SNE on a preprocessed dataset."""
+
+import argparse
+import csv
+import os
+import sys
+
+import numpy
+import pandas
+from sklearn import (
+    decomposition,
+    manifold,
+    pipeline,
+)
+
+
+def named_model(name):
+    if name == 'TSNE':
+        return manifold.TSNE(random_state=0, n_components=3, perplexity=200)
+    if name == 'PCA-TSNE':
+        tsne = manifold.TSNEmetadata_features_tsne.tsv(
+            random_state=0, perplexity=50, early_exaggeration=6.0)
+        pca = decomposition.PCA(n_components=48)
+        return pipeline.Pipeline([('reduce_dims', pca), ('tsne', tsne)])
+    if name == 'PCA':
+        return decomposition.PCA(n_components=100)
+    raise ValueError('Unknown model')
+
+
+def process(data, model):
+    # split the comma delimited string back into a list of values
+    transformed = [d.split(',') for d in data['features']]
+    print("rella")
+    print(type(transformed))
+    # convert image data to float64 matrix. float64 is need for bh_sne
+    x_data = numpy.asarray(transformed).astype('float64')
+    x_data = x_data.reshape((x_data.shape[0], -1))
+
+    # perform t-SNE
+    print("check")
+    print(model)
+    vis_data = model.fit_transform(x_data)
+    print(vis_data)
+    # convert the results into a list of dict
+    results = []
+    for i in range(0, len(data)):
+        results.append({
+            'id': data['id'][i],
+            'x': vis_data[i][0],
+            'y': vis_data[i][1],
+            'z': vis_data[i][2]
+        })
+    return results
+
+
+def write_tsv(results, output_tsv):
+    # write to a tab delimited file
+    with open(output_tsv, 'w') as output:
+        w = csv.DictWriter(
+            output, fieldnames=['id', 'x', 'y', 'z'], delimiter='\t',
+            lineterminator='\n')
+        w.writeheader()
+        w.writerows(results)
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog='TSNE')
+    parser.add_argument('source', help='path to the source metadata file')
+    parser.add_argument(
+        '-l', '--limit', type=int, help='use subset of first N items')
+    parser.add_argument(
+        '--model', default='TSNE', type=named_model, help='use named model')
+    args = parser.parse_args(argv[1:])
+
+    try:
+        # read in the data file
+        data = pandas.read_csv(args.source, sep='\t')
+        if args.limit:
+            data = data.iloc[:args.limit]
+
+        results = process(data, args.model)
+
+        destination_dir = os.path.dirname(args.source)
+        source_filename = os.path.splitext(args.source)[0].split(os.sep)[-1]
+        tsv_name = os.path.join(destination_dir, '{}_tsne.tsv'.format(
+            source_filename))
+
+        write_tsv(results, tsv_name)
+    except EnvironmentError as e:
+        sys.stderr.write('error: {}\n'.format(e))
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
+
+step-4: Generate ANOVA for tsne vectors by creating a mean vector
+import math
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+import scipy.stats as stats
+CLASSES = ['aeroplane','bicycle','bird', 'boat', 'bottle', 'bus', 'car',
+           'cat', 'chair', 'cow', 'diningtable', 'dog', 'horse', 'motorbike',
+           'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor']
+
+
+df = pd.read_csv('C:/Users/Siri/PycharmProjects/Dataset_conversion/Pascal_VOC/classes_2007/tvmonitor/metadata_features_tsne_backup.tsv',delimiter='\t', encoding='utf-8')
+df = df.iloc[0:, 1:4]
+# df1 = pd.read_csv('C:/Users/Siri/PycharmProjects/Dataset_conversion/Pascal_VOC/classes_2007/bicycle/metadata_features_tsne.tsv',delimiter='\t', encoding='utf-8')
+# df['label'] = 1
+class_list =[]
+# df1['label'] = 0
+for i in range(0, len(CLASSES)):
+    print(CLASSES[i])
+    df1 =pd.read_csv("C:/Users/Siri/PycharmProjects/Dataset_conversion/Pascal_VOC/classes_2007/"+CLASSES[i]+"/metadata_features_tsne_backup.tsv",delimiter='\t',encoding='utf-8')
+    df1 = df1.iloc[0:, 1:4]
+    from scipy import stats
+
+    temp = df.mean(axis=0)
+    temp1 = df1.mean(axis=0)
+    temps1 = [temp['x'], temp['y'], temp['z']]
+    temps2 = [temp1['x'], temp1['y'], temp1['z']]
+    res = stats.f_oneway(temps1, temps2)
+    print(res[1])
+    class_list.append(round(res[1],2))
+print(class_list)
